@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "naptrap"
+version = "0.1.0"
+description = "Local inference for independently trained text-defined keyword models"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+  "torch>=1.13",
+]
+
+[project.optional-dependencies]
+examples = ["numpy>=1.24"]
+test = ["pytest>=7", "numpy>=1.24"]
+
+[project.scripts]
+naptrap = "naptrap.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+license-files = ["licenses/*.txt", "THIRD_PARTY_NOTICES.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
