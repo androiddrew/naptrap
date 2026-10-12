@@ -1,31 +1,29 @@
-"""PyTorch-only inference port of Google's Apache-2.0 speech_embedding/1.
+"""PyTorch port of Google's speech_embedding/1 (Apache-2.0) feature extractor.
 
-The original SavedModel is authoritative. Conversion tooling reads its frozen
-weights and frontend constants; this module never imports TensorFlow or NumPy.
+The converted weights, mel matrix and window come from the original TensorFlow
+model unchanged; this module never imports TensorFlow or NumPy.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .features import waveform_tensor
+from .artifacts import ArtifactError, load_artifact
+from .features import SAMPLE_RATE, waveform_tensor
 
-
-PARENT_SHA256 = "0f626c42009c1eb916401b7b2800229a211e43100115bc591b9afbf1b60da27f"
 FORMAT = "naptrap-google-speech-embedding-v1"
+PARENT_SHA256 = "0f626c42009c1eb916401b7b2800229a211e43100115bc591b9afbf1b60da27f"
 
 
 class GoogleSpeechEmbedding(nn.Module):
-    """Frozen 16 kHz crop -> [floor(samples/1280),96] speech features.
+    """16 kHz clip -> ``[floor(samples / 1280), 96]`` speech embeddings.
 
-    This matches the trained keyword models' left11120/no-trim crop policy.
-    The exact original mel matrix and Hann window are loaded as buffers.
+    The clip is left-padded with 11,120 zeros and not trimmed, matching how the
+    keyword models were trained.
     """
 
     def __init__(self):
@@ -49,23 +47,16 @@ class GoogleSpeechEmbedding(nn.Module):
         self.eval()
 
     def train(self, mode=True):
-        # This is an immutable pretrained feature extractor, not a fitting API.
+        # A frozen pretrained feature extractor; BatchNorm stays in inference mode.
         return super().train(False)
 
     @classmethod
-    def from_directory(cls, directory: str | Path) -> "GoogleSpeechEmbedding":
-        root = Path(directory).expanduser().resolve()
-        manifest = json.loads((root / "manifest.json").read_text())
-        if manifest.get("format") != FORMAT or manifest.get("parent_archive_sha256") != PARENT_SHA256:
-            raise ValueError("Wrong Google model artifact/version")
-        path = root / "model.pt"
-        if hashlib.sha256(path.read_bytes()).hexdigest() != manifest.get("model_sha256"):
-            raise ValueError("Converted Google model checksum mismatch")
-        saved = torch.load(path, map_location="cpu", weights_only=True)
-        if saved.get("format") != FORMAT or saved.get("parent_archive_sha256") != PARENT_SHA256:
-            raise ValueError("Converted Google state identity differs")
+    def from_pretrained(cls, directory: str | Path) -> "GoogleSpeechEmbedding":
+        config, state = load_artifact(directory, FORMAT)
+        if config.get("source", {}).get("archive_sha256") != PARENT_SHA256:
+            raise ArtifactError("Google speech embedding was converted from an unexpected source archive")
         model = cls()
-        model.load_state_dict(saved["model"], strict=True)
+        model.load_state_dict(state, strict=True)
         model._loaded = True
         return model.eval()
 
@@ -89,17 +80,17 @@ class GoogleSpeechEmbedding(nn.Module):
             if index in (1, 9, 17):
                 value = F.max_pool2d(value, kernel_size=(2, 2), stride=(2, 2))
             elif index in (5, 13):
-                # Fixed32-bin input gives even frequency widths here, so the
-                # source's SAME pooling at index5 adds no padding.
+                # The fixed 32-bin input gives even frequency widths here, so the
+                # original SAME pooling at index 5 adds no padding.
                 value = F.max_pool2d(value, kernel_size=(1, 2), stride=(1, 2))
         return self.output(value)[0, :, :, 0].transpose(0, 1)
 
     @torch.inference_mode()
-    def forward(self, waveform, sample_rate=16000):
+    def forward(self, waveform, sample_rate=SAMPLE_RATE):
         if not self._loaded:
-            raise RuntimeError("Load pretrained Google weights with GoogleSpeechEmbedding.from_directory()")
+            raise RuntimeError("Load pretrained weights with GoogleSpeechEmbedding.from_pretrained()")
         wave = waveform_tensor(waveform, sample_rate).to(self.window.device)
         result = self.encode_log_mel(self.log_mel(wave))
         if result.shape != (wave.numel() // 1280, 96) or not torch.isfinite(result).all():
-            raise RuntimeError("Converted Google encoder output violates its contract")
+            raise RuntimeError("Google speech embedding produced an invalid output")
         return result

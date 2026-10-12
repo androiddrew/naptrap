@@ -1,4 +1,4 @@
-"""Explicit PhonMatchNet feature contracts and its independent mel frontend."""
+"""Input validation and the 40-bin log-mel frontend used by PhonMatchNet."""
 
 from __future__ import annotations
 
@@ -7,13 +7,17 @@ from typing import Any
 import torch
 from torch import nn
 
+SAMPLE_RATE = 16000
+MIN_SAMPLES = SAMPLE_RATE // 2
+MAX_SAMPLES = SAMPLE_RATE * 2
+
 
 def feature_tensor(value: Any, name: str, width: int, minimum: int, maximum: int) -> torch.Tensor:
-    """Accept [time,width] or [1,time,width] FP32, then stage on CPU."""
+    """Accept ``[time, width]`` or ``[1, time, width]`` float32 and return ``[1, time, width]`` on CPU."""
     try:
         tensor = torch.as_tensor(value)
     except (TypeError, ValueError, RuntimeError) as error:
-        raise ValueError(f"{name} must be an FP32 feature array") from error
+        raise ValueError(f"{name} must be a float32 feature array") from error
     if tensor.dtype != torch.float32:
         raise ValueError(f"{name} must have dtype float32")
     if tensor.ndim == 2:
@@ -29,34 +33,33 @@ def feature_tensor(value: Any, name: str, width: int, minimum: int, maximum: int
 
 
 def waveform_tensor(value: Any, sample_rate: int) -> torch.Tensor:
-    if sample_rate != 16000:
-        raise ValueError("The current model requires mono 16 kHz audio; resample explicitly before inference")
+    """Validate one mono 16 kHz clip of 0.5-2 s, float32 scaled into [-1, 1]."""
+    if sample_rate != SAMPLE_RATE:
+        raise ValueError("Audio must be mono 16 kHz; resample before inference")
     try:
         wave = torch.as_tensor(value)
     except (TypeError, ValueError, RuntimeError) as error:
         raise ValueError("waveform must be a float32 array") from error
     if wave.dtype != torch.float32 or wave.ndim != 1:
-        raise ValueError("waveform must be a one-dimensional float32 array, scaled once into [-1,1]")
-    if not 8000 <= wave.numel() <= 32000:
-        raise ValueError("Query duration must be 0.5–2 seconds (8,000–32,000 samples)")
+        raise ValueError("waveform must be a one-dimensional float32 array scaled into [-1, 1]")
+    if not MIN_SAMPLES <= wave.numel() <= MAX_SAMPLES:
+        raise ValueError("Clip duration must be 0.5-2 seconds (8,000-32,000 samples at 16 kHz)")
     wave = wave.detach().to(device="cpu").contiguous()
     if not torch.isfinite(wave).all() or wave.abs().max() > 1:
-        raise ValueError("waveform must contain finite unit-scaled samples in [-1,1]")
+        raise ValueError("waveform must contain finite samples in [-1, 1]")
     return wave
 
 
 class KeywordMel(nn.Module):
-    """The exact 40-bin crop frontend, using the trained model's mel/window buffers."""
+    """Log10 power mel spectrogram: 400-sample window, 160 hop, 512 FFT, 40 bins.
 
-    def __init__(self, state):
+    The mel matrix and window are stored with the trained weights.
+    """
+
+    def __init__(self):
         super().__init__()
-        for key, shape in (("mel_matrix", (257, 40)), ("window", (400,))):
-            value = state.get(key)
-            if not isinstance(value, torch.Tensor) or value.dtype != torch.float32 or tuple(value.shape) != shape:
-                raise ValueError(f"Invalid keyword frontend buffer: {key}")
-            if not torch.isfinite(value).all():
-                raise ValueError(f"Nonfinite keyword frontend buffer: {key}")
-            self.register_buffer(key, value.detach().cpu().clone())
+        self.register_buffer("mel_matrix", torch.zeros(257, 40))
+        self.register_buffer("window", torch.zeros(400))
 
     @torch.inference_mode()
     def forward(self, wave: torch.Tensor) -> torch.Tensor:

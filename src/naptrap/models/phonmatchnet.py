@@ -1,105 +1,128 @@
-"""Our selected PhonMatchNet, loaded without the original training repository."""
+"""PhonMatchNet text-defined keyword detection."""
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Dict, Mapping, Optional, Union
 
 import torch
 
-from ..bundle import BundleError, ModelBundle
-from ..features import feature_tensor, waveform_tensor
-from ..types import Prediction
+from ..artifacts import WEIGHTS, ArtifactError, load_artifact, read_config, sha256
+from ..features import SAMPLE_RATE, feature_tensor, waveform_tensor
+from ..google import FORMAT as GOOGLE_FORMAT, GoogleSpeechEmbedding
+from ..hub import DEFAULT_REVISION, download
+from ..text import FORMAT as G2P_FORMAT, G2PTextEncoder, normalize_keyword
+from ..types import Keyword, Prediction
 from .network import PhonMatchNetwork
+
+FORMAT = "naptrap-phonmatchnet-v1"
+DEFAULT_REPO = "androiddrew/naptrap-phonmatchnet-en"
+PathLike = Union[str, Path]
 
 
 class PhonMatchNet:
-    """CPU eager PyTorch inference with original seed-matched thresholds.
+    """Content-only (C-KWS) detection: was this keyword spoken in the clip?
 
-    Inputs are the exact Google speech_embedding/1 and neural G2P features used
-    during training. This first backend performs content-only C-KWS detection.
+    Inputs are one mono 16 kHz clip of 0.5-2 seconds and an English keyword.
+    The keyword is converted to G2P decoder features, and the audio to 40-bin
+    log-mels plus Google speech embeddings. The model has no speaker
+    enrollment: it does not check who is speaking.
     """
 
     name = "phonmatchnet"
     task = "C-KWS"
 
-    @classmethod
-    def from_bundle(cls, bundle: str | Path, *, seed: int = 17, google_encoder=None) -> "PhonMatchNet":
-        return cls(bundle, seed=seed, google_encoder=google_encoder)
-
-    def __init__(self, bundle: str | Path, *, seed: int = 17, google_encoder=None):
-        self.bundle = ModelBundle(bundle)
-        if seed not in (17, 29, 43) or seed not in self.bundle.manifest.get("seeds", []):
-            raise BundleError("Choose a registered model seed: 17, 29 or 43")
-        self.seed = int(seed)
-        self.google_encoder = google_encoder
-        directory = f"phonmatchnet/seed-{self.seed}"
-        model_path = self.bundle.checked_file(directory + "/keyword.pt")
-        frontend_path = self.bundle.checked_file(directory + "/keyword-frontend.pt")
-        calibration = self.bundle.checked_json(directory + "/thresholds.json")
-        identity = calibration.get("identity", {})
-        if calibration.get("fit_split") != "dev-cal" or identity.get("seed") != self.seed or identity.get("variant") != self.name:
-            raise BundleError("Calibration does not belong to this seed/model and dev-cal role")
+    def __init__(self, model_dir: PathLike, google_dir: PathLike, g2p_dir: PathLike):
+        config, state = load_artifact(model_dir, FORMAT)
         try:
-            values = calibration["thresholds"]["keyword-only-no-gating"][self.task]
-            self._thresholds = {far: float(values[str(far)]) for far in (.01, .1)}
-        except (KeyError, TypeError, ValueError) as error:
-            raise BundleError("Missing keyword-only C-KWS calibration") from error
-        if not all(torch.isfinite(torch.tensor(v)) for v in self._thresholds.values()):
-            raise BundleError("Nonfinite calibration threshold")
-        frontend = torch.load(frontend_path, map_location="cpu", weights_only=True)
-        if frontend.get("format") != "keyword-logmel-frontend-v1":
-            raise BundleError("Unsupported keyword frontend format")
-        payload = torch.load(model_path, map_location="cpu", weights_only=True)
-        if payload.get("format") != "zp-kws-final-keyword-inference-v1" or payload.get("family") != self.name:
-            raise BundleError("Model payload does not contain the registered PhonMatchNet state")
-        self._model = PhonMatchNetwork(frontend["model"])
-        self._model.load_state_dict(payload["model"], strict=True)
-        for key, value in frontend["model"].items():
-            if not torch.equal(self._model.audio.frontend.state_dict()[key], value):
-                raise BundleError("Acoustic frontend differs between model and frontend payload")
+            self._thresholds = {float(far): float(value) for far, value in config["thresholds"].items()}
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise ArtifactError("config.json has no valid thresholds") from error
+        if not self._thresholds or not all(math.isfinite(v) for v in self._thresholds.values()):
+            raise ArtifactError("config.json has no valid thresholds")
+        self.config = config
+        self._check_companion("google", google_dir, GOOGLE_FORMAT)
+        self._check_companion("g2p", g2p_dir, G2P_FORMAT)
+        self._model = PhonMatchNetwork()
+        self._model.load_state_dict(state, strict=True)
         self._frontend = self._model.audio.frontend
+        self.google_encoder = GoogleSpeechEmbedding.from_pretrained(google_dir)
+        self.text_encoder = G2PTextEncoder.from_pretrained(g2p_dir)
+
+    @classmethod
+    def from_pretrained(cls, model_dir: Optional[PathLike] = None, *, google_dir: Optional[PathLike] = None,
+                        g2p_dir: Optional[PathLike] = None, revision: Optional[str] = None,
+                        cache_dir: Optional[str] = None) -> "PhonMatchNet":
+        """Load from local directories, downloading any that are not given.
+
+        Downloads need ``pip install 'naptrap[hub]'``. ``revision`` applies to
+        the PhonMatchNet repository; companion encoders use the revisions
+        pinned in its ``config.json``.
+        """
+        if model_dir is None:
+            model_dir = download(DEFAULT_REPO, revision or DEFAULT_REVISION, cache_dir)
+        _, config = read_config(model_dir, FORMAT)
+        requires = config.get("requires", {})
+        if google_dir is None:
+            google_dir = download(requires["google"]["repo_id"], requires["google"]["revision"], cache_dir)
+        if g2p_dir is None:
+            g2p_dir = download(requires["g2p"]["repo_id"], requires["g2p"]["revision"], cache_dir)
+        return cls(model_dir, google_dir, g2p_dir)
+
+    def _check_companion(self, key: str, directory: PathLike, expected_format: str) -> None:
+        required = self.config.get("requires", {}).get(key, {})
+        root, _ = read_config(directory, expected_format)
+        if required.get("sha256") and sha256(root / WEIGHTS) != required["sha256"]:
+            raise ArtifactError(f"{root} is not the {key} encoder this model was trained with")
 
     @property
-    def thresholds(self) -> dict[float, float]:
-        """A copy of the frozen operating points; no fitting happens here."""
+    def thresholds(self) -> Dict[float, float]:
+        """Available operating points: development target FAR -> score threshold."""
         return dict(self._thresholds)
 
+    def keyword(self, text: str) -> Keyword:
+        """Precompute a keyword's text features; reuse the result across clips."""
+        return Keyword(normalize_keyword(text), self.text_encoder(text))
+
     @torch.inference_mode()
-    def predict(self, features: Mapping[str, Any], *, far: float = .01) -> Prediction:
-        """Score an unpadded clip from keyword_mel, google and text tensors."""
+    def detect(self, waveform: Any, keyword: Union[str, Keyword], *, sample_rate: int = SAMPLE_RATE,
+               far: float = 0.01) -> Prediction:
+        """Score one clip against a keyword string or a :meth:`keyword` result.
+
+        ``waveform`` is a 1-D float32 tensor or array of 0.5-2 s mono 16 kHz
+        audio scaled into [-1, 1]. ``far`` selects an operating point from
+        :attr:`thresholds`.
+        """
+        if not isinstance(keyword, Keyword):
+            keyword = self.keyword(keyword)
+        wave = waveform_tensor(waveform, sample_rate)
+        features = {
+            "keyword_mel": self._frontend(wave),
+            "google": self.google_encoder(wave, sample_rate=sample_rate),
+            "text": keyword.features,
+        }
+        return self.predict(features, far=far)
+
+    @torch.inference_mode()
+    def predict(self, features: Mapping[str, Any], *, far: float = 0.01) -> Prediction:
+        """Score precomputed ``keyword_mel`` [T,40], ``google`` [G,96] and ``text`` [P,256] features."""
         if far not in self._thresholds:
-            raise ValueError("far must select an existing development target: 0.01 or 0.1")
-        missing = {"keyword_mel", "google", "text"} - features.keys()
+            choices = ", ".join(str(v) for v in sorted(self._thresholds))
+            raise ValueError(f"far must be one of the calibrated operating points: {choices}")
+        missing = {"keyword_mel", "google", "text"} - set(features.keys())
         if missing:
             raise ValueError("Missing features: " + ", ".join(sorted(missing)))
         mel = feature_tensor(features["keyword_mel"], "keyword_mel", 40, 50, 200)
         google = feature_tensor(features["google"], "google", 96, 6, 25)
         text = feature_tensor(features["text"], "text", 256, 1, 128)
         if not 8 * google.shape[1] <= mel.shape[1] <= 8 * google.shape[1] + 8:
-            raise ValueError("Google and keyword acoustic feature clocks disagree")
+            raise ValueError("keyword_mel and google features describe different clip lengths")
         logits = self._model(mel, google, text)
         if logits.shape != (1,) or not torch.isfinite(logits).all():
-            raise RuntimeError("Model returned invalid keyword logits")
+            raise RuntimeError("Model returned an invalid keyword logit")
         score = float(logits.sigmoid()[0])
         threshold = self._thresholds[far]
-        return Prediction(model=self.name, seed=self.seed, task=self.task, score=score,
-                          threshold=threshold, accepted=score >= threshold, target_far=far,
-                          details={"keyword_logit": float(logits[0]), "keyword_probability": score})
-
-    def predict_audio(self, waveform: Any, *, text: Any, google: Any = None,
-                      sample_rate: int = 16000, far: float = .01) -> Prediction:
-        """Compute our mel branch from audio; callers supply matching neural features.
-
-        ``google`` must describe this exact waveform/crop. ``text`` is the
-        desired keyword's 256D neural G2P decoder sequence, not phoneme tokens.
-        """
-        wave = waveform_tensor(waveform, sample_rate)
-        if google is None:
-            if self.google_encoder is None:
-                raise ValueError("Supply Google features or configure a GoogleSpeechEmbedding encoder")
-            google = self.google_encoder(wave, sample_rate=sample_rate)
-        features = feature_tensor(google, "google", 96, 6, 25)
-        if features.shape[1] != wave.numel() // 1280:
-            raise ValueError("Google features do not match the supplied waveform length")
-        return self.predict({"keyword_mel": self._frontend(wave), "google": features, "text": text}, far=far)
+        return Prediction(model=self.name, task=self.task, score=score, threshold=threshold,
+                          accepted=score >= threshold, target_far=far,
+                          details={"keyword_logit": float(logits[0])})

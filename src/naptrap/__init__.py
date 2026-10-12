@@ -1,10 +1,15 @@
-"""Naptrap: local inference for text-defined keyword models."""
+"""naptrap: local, text-defined wake word and keyword detection."""
 
-from .bundle import BundleError
+from .artifacts import ArtifactError
+from .audio import load_wav
 from .google import GoogleSpeechEmbedding
 from .models import PhonMatchNet
 from .registry import available_models, load_model, register_model
-from .types import KeywordModel, Prediction
+from .text import G2PTextEncoder, normalize_keyword
+from .types import Keyword, KeywordModel, Prediction
 
 __version__ = "0.1.0"
-__all__ = ["BundleError", "GoogleSpeechEmbedding", "KeywordModel", "PhonMatchNet", "Prediction", "available_models", "load_model", "register_model"]
+__all__ = [
+    "ArtifactError", "G2PTextEncoder", "GoogleSpeechEmbedding", "Keyword", "KeywordModel", "PhonMatchNet",
+    "Prediction", "available_models", "load_model", "load_wav", "normalize_keyword", "register_model",
+]
