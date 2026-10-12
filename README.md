@@ -1,195 +1,181 @@
 # naptrap
 
-**Local Python inference for text-defined keyword models.** The first backend
-is our independently trained **PhonMatchNet**. A small model registry leaves
-room for other families, including our ZP-KWS-style system later.
+**Local, text-defined wake word detection in PyTorch.** Type a keyword, give
+naptrap a short audio clip, and it tells you whether the keyword was spoken.
+New wake words need no recordings or training.
 
-This package loads the existing, qualified model bundle. It does not import
-the PhonMatchNet training repository, retrain weights, or download assets at
-import time. Model files and training data are kept outside the source package.
+```python
+from naptrap import load_model, load_wav
+
+model = load_model("phonmatchnet")             # downloads the model on first use
+result = model.detect(load_wav("clip.wav"), "hey computer")
+
+print(result.score)     # keyword-match probability, 0-1
+print(result.accepted)  # score >= the model's calibrated threshold
+```
+
+The first model is an independently trained
+[PhonMatchNet](https://huggingface.co/androiddrew/naptrap-phonmatchnet-en)
+(Lee & Cho, Interspeech 2023) for English. Inference runs on the CPU with
+**PyTorch as the only heavy dependency**. There is no TensorFlow, NumPy,
+torchaudio or NLTK, and no cloud API.
 
 ## Install
 
-The core requires **Python 3.8+ and PyTorch 1.13+**, with no upper version pin.
-**PyTorch is the only direct runtime dependency.** TensorFlow, NumPy,
-torchaudio, ONNX Runtime, SciPy and NLTK are not needed by the core inference API.
-
 ```bash
-python -m pip install -e ./naptrap
+pip install "naptrap[hub]"
 ```
 
-Choose an official PyTorch wheel compatible with your Python/platform. If
-PyTorch is already installed, install just this package with `--no-deps`.
-For the NPZ command-line examples below, install the optional NumPy extra:
+Python 3.9+ and PyTorch 1.13+ are required. If you want a CPU-only or
+CUDA-specific PyTorch build, install it first; see
+[pytorch.org](https://pytorch.org/get-started/locally/). The `hub` extra adds
+`huggingface_hub` for automatic model downloads. Without it, `pip install
+naptrap` works with model directories you download yourself.
 
-```bash
-python -m pip install -e './naptrap[examples]'
-```
+## Models
 
-### Tested CPU combinations
+`load_model("phonmatchnet")` fetches three Hugging Face repositories (about
+6 MB in total), pinned to revision `v1`, and caches them locally:
 
-| Python | PyTorch | Optional test/example NumPy |
+| Repository | Role | License |
 |---|---|---|
-| 3.8.20 | 1.13.1 | 1.24.4 |
-| 3.10.19 | 2.0.1 | 1.26.4 |
-| 3.12.3 | 2.10.0+cpu | 1.26.4 |
-| 3.14.0 | 2.10.0+cpu | 2.3.4 |
+| [`androiddrew/naptrap-phonmatchnet-en`](https://huggingface.co/androiddrew/naptrap-phonmatchnet-en) | keyword matcher | Apache-2.0 |
+| [`androiddrew/google-speech-embedding-pytorch`](https://huggingface.co/androiddrew/google-speech-embedding-pytorch) | frozen audio encoder | Apache-2.0 |
+| [`androiddrew/g2p-en-decoder-pytorch`](https://huggingface.co/androiddrew/g2p-en-decoder-pytorch) | frozen keyword text encoder | Apache-2.0 |
 
-All four pass the retained model and Google-encoder numerical checks. This is
-not a promise that every Python/PyTorch pair has a compatible wheel. Older
-PyTorch with NumPy examples should use NumPy 1.x. GB10 CUDA support requires a
-newer GPU-compatible PyTorch build; this initial library backend is qualified
-on CPU. Ordinary eager PyTorch avoids TorchScript's Python 3.14 compatibility
-warning. See [docs/compatibility.md](docs/compatibility.md).
-
-## Try the existing model bundle
-
-```python
-from pathlib import Path
-import numpy as np
-from naptrap import load_model
-
-bundle = Path.home() / "wakeword-models/releases/python-onnx-v1"
-model = load_model("phonmatchnet", bundle=bundle, seed=17)
-
-with np.load(bundle / "examples/said-mister-seed17.npz", allow_pickle=False) as features:
-    prediction = model.predict(features)
-
-print(prediction.score)      # Keyword-match probability
-print(prediction.accepted)   # Original dev-cal threshold, C-KWS task
-print(prediction.to_dict())
-```
-
-Or use the command line:
+To work offline, download them once and pass the directories:
 
 ```bash
-naptrap --bundle ~/wakeword-models/releases/python-onnx-v1 \
-  --features ~/wakeword-models/releases/python-onnx-v1/examples/said-mister-seed17.npz
+hf download androiddrew/naptrap-phonmatchnet-en --revision v1 --local-dir models/phonmatchnet
+hf download androiddrew/google-speech-embedding-pytorch --revision v1 --local-dir models/google
+hf download androiddrew/g2p-en-decoder-pytorch --revision v1 --local-dir models/g2p
 ```
-
-`python -m naptrap` offers the same options. Seed 17 is our fixed convenience
-default, not a winner chosen from final-test results. Seeds 29 and 43 are also
-available. `far=0.01` or `far=0.1` chooses an existing development-calibrated
-operating point; it does not promise that false-acceptance rate on new audio.
-
-## Inputs in this first version
-
-The current backend is **CPU eager PyTorch, one unpadded query clip at a time**.
-It returns content-only keyword detection (C-KWS), without speaker enrollment.
-
-| Feature key | Shape, FP32 | Meaning |
-|---|---|---|
-| `keyword_mel` | `[T,40]` or `[1,T,40]`, 50–200 frames | Our trainable audio branch's exact log-mel input |
-| `google` | `[G,96]` or `[1,G,96]`, 6–25 frames | Frozen Google speech-embedding vectors |
-| `text` | `[P,256]` or `[1,P,256]`, 1–128 positions | Frozen neural G2P decoder features for the desired keyword |
-
-Our clip contract is **mono 16 kHz, 0.5–2 seconds**. See the Google contract
-below for the distinct feature clock. Arrays must be finite float32. Extra keys
-in the example NPZ (such as speaker features) are unused by this backend.
-
-Naptrap can calculate its own mel branch from a waveform:
 
 ```python
-# waveform: mono float32 samples scaled once into [-1,1]
-# google_features: extracted for this exact waveform/crop
-# text_features: neural G2P features for the desired keyword
-prediction = model.predict_audio(
-    waveform,
-    google=google_features,
-    text=text_features,
-    sample_rate=16000,
-)
+model = load_model("phonmatchnet", model_dir="models/phonmatchnet",
+                   google_dir="models/google", g2p_dir="models/g2p")
 ```
 
-You can now have Naptrap compute the Google features using the converted
-PyTorch encoder as well:
+Every weight file is checked against the SHA-256 recorded in its `config.json`.
+The keyword model also pins the exact encoders it was trained with.
+
+## Usage
+
+### Audio
+
+`detect()` scores **one mono 16 kHz clip of 0.5–2 seconds**, given as a 1-D
+float32 tensor or array with values in [-1, 1]. `load_wav()` reads 16-bit PCM
+WAV files using only the standard library. Convert other files first:
+
+```bash
+ffmpeg -i input.m4a -ac 1 -ar 16000 -sample_fmt s16 clip.wav
+```
+
+naptrap does not resample, trim or rescale audio for you.
+
+### Reusing a keyword
+
+Converting the keyword text is cheap, but if you score many clips against the
+same keyword you can do it once:
 
 ```python
-from naptrap import GoogleSpeechEmbedding, load_model
-
-google_encoder = GoogleSpeechEmbedding.from_directory(
-    "~/wakeword-models/encoders/google-speech-embedding-pytorch-v1"
-)
-model = load_model("phonmatchnet", bundle=bundle, google_encoder=google_encoder)
-prediction = model.predict_audio(waveform, text=text_features)
+wake = model.keyword("hey computer")
+for clip in clips:
+    if model.detect(clip, wake).accepted:
+        ...
 ```
 
-The Google encoder runs locally with PyTorch only. You still supply the keyword's
-matching **256D neural G2P features**; this is not yet a `WAV + arbitrary keyword
-string` frontend. Ordinary phoneme strings or another encoder's features are
-not an equivalent replacement for the trained inputs.
+Keywords are English words; accents and punctuation are removed. Spell out
+numbers ("route sixty six").
 
-## What is the Google model, and does it require TensorFlow?
+### Operating points and thresholds
 
-It is **`google/speech_embedding/1`**, a small pretrained convolutional speech
-encoder. It maps audio to a sequence of **96-number vectors** describing speech
-patterns. It is not a transcript-producing recognizer or a cloud API; its
-downloaded weights can be run locally. Both our PhonMatchNet and ZP-KWS-style
-models were trained using these frozen features.
+```python
+model.thresholds                                # {0.01: 0.7149..., 0.1: 0.0025...}
+model.detect(clip, "hey computer", far=0.1)     # more sensitive
+```
 
-Google's official Kaggle model-instance metadata identifies the exact
-**TensorFlow1 / speech-embedding / version 1** artifact as **Apache 2.0**.
-That is a permissive license allowing commercial use and redistribution,
-subject to its license/notice and modification-marking conditions.
+Each threshold was fitted on held-out development speakers to target a
+per-clip false-accept rate (FAR) of 1% or 10%. **These targets do not hold on
+other audio.** On phonetically confusable phrases, the 1% threshold accepted
+31% of negatives. For a real product, record some positive and negative clips
+in your setting and choose your own threshold on `result.score`. See the
+[model card](https://huggingface.co/androiddrew/naptrap-phonmatchnet-en) for
+the evaluation.
 
-The original artifact is a legacy TensorFlow model. **A validated PyTorch port
-is now implemented in `naptrap.google`**, using all 96 original weight/statistic
-tensors and the exact frontend constants. The converted checkpoint is about
-1.4 MB and is distributed separately from the library. TensorFlow is used only
-by the offline conversion/reference tools; it is not imported for inference.
+### Command line
 
-The port uses the same model mathematics and weights, with measured floating-
-point differences between FFT implementations. Across the tested runtime matrix,
-the maximum downstream probability difference was **2.45e-6**, with identical
-decisions at the frozen thresholds. Pure-tone stress differences are documented,
-not described as bit-exact conversion. See the qualification details below.
+```bash
+naptrap detect clip.wav "hey computer"
+naptrap detect clip.wav "hey computer" --far 0.1 --model-dir models/phonmatchnet \
+    --google-dir models/google --g2p-dir models/g2p
+```
 
-See [docs/google-embedding.md](docs/google-embedding.md) for publisher links,
-the precise preprocessing contract and redistribution obligations.
+The command prints the prediction as JSON. It exits with 0 if the keyword was
+accepted, 1 if it was rejected and 2 on error. `python -m naptrap` works the
+same way.
 
-## Adding another model
+### Precomputed features
 
-Backends return the common `Prediction` result and implement `predict(features,
-far=...)`. Register a loader explicitly:
+`model.predict({"keyword_mel": ..., "google": ..., "text": ...})` scores
+features you computed yourself: `[T, 40]`, `[T/8, 96]` and `[P, 256]` float32.
+The encoders are exposed as `naptrap.GoogleSpeechEmbedding` and
+`naptrap.G2PTextEncoder`.
+
+## Limitations
+
+- **Single clips, not a streaming listener (yet).** To watch a microphone you
+  must window the audio yourself, e.g. 1.5 s windows every 0.25 s, and add
+  your own debouncing.
+- **English only**, trained on read audiobook speech (LibriSpeech). Expect
+  lower accuracy with noise, far-field microphones, accents or children.
+- **No speaker verification.** Anyone saying the keyword triggers it.
+- Similar-sounding phrases are often confused.
+- CPU inference is the supported path; other devices have not been validated.
+- Not for security or safety-critical use.
+
+## Adding model families
+
+Backends implement `keyword()`, `detect()` and `predict()`, and return a
+`Prediction`. Register a loader under a new name:
 
 ```python
 from naptrap import register_model, load_model
 
-# FutureZpKws.from_bundle must return a backend implementing KeywordModel.
-register_model("zp-kws", FutureZpKws.from_bundle)
-detector = load_model("zp-kws", bundle=another_bundle)
+register_model("my-model", MyModel.from_pretrained)
+model = load_model("my-model", model_dir="...")
 ```
 
-Only `phonmatchnet` is built in today. Model-specific enrollment, features and
-scoring semantics belong in the corresponding backend. No future model is
-silently substituted for the requested family.
-
-## Reproducibility and tests
-
-Model, frontend and calibration files are checked against the bundle manifest.
-Calibration must match the selected seed, PhonMatchNet variant and dev-cal role.
-Checksums establish bundle integrity; obtain the manifest from a trusted source.
+## Development
 
 ```bash
-python -m pip install -e './naptrap[test]'
-python -m pytest naptrap/tests -q
-
-# Enable real-model tests against your external candidate bundle:
-NAPTRAP_TEST_BUNDLE=~/wakeword-models/releases/python-onnx-v1 \
-  python -m pytest naptrap/tests -q
-
-# Include the converted Google encoder's integration cases:
-NAPTRAP_TEST_BUNDLE=~/wakeword-models/releases/python-onnx-v1 \
-NAPTRAP_TEST_GOOGLE=~/wakeword-models/encoders/google-speech-embedding-pytorch-v1 \
-  python -m pytest naptrap/tests -q
+pip install -e ".[test]"
+pytest
+# Also run the real-model tests against downloaded model directories:
+NAPTRAP_TEST_MODELS=path/to/models pytest
 ```
 
-The model bundle, not this source tree, contains trained parameters and frontend
-buffers. Keep it separately available when moving or installing the library.
+`NAPTRAP_TEST_MODELS` must point at a directory holding the three model
+repositories in subdirectories named `naptrap-phonmatchnet-en`,
+`google-speech-embedding-pytorch` and `g2p-en-decoder-pytorch`.
 
-## License scope
+## License and attribution
 
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The model's BSD-3-Clause
-foundation and the Google encoder's Apache-2.0 terms are separate from the
-license choice for our new library and learned weights. That project-level
-choice has not yet been made; no blanket license is assigned by this README.
+naptrap is licensed under the [Apache License 2.0](LICENSE). The network
+follows the PhonMatchNet design and NCSOFT's BSD-3-Clause reference code (see
+[NOTICE](NOTICE) and [licenses/](licenses/)). The PhonMatchNet weights were
+trained independently. **naptrap is not affiliated with or endorsed by NCSOFT
+or the PhonMatchNet authors.** See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for every component.
+
+If naptrap's PhonMatchNet model is useful in your research, please cite:
+
+```bibtex
+@inproceedings{lee23phonmatchnet,
+  title     = {PhonMatchNet: Phoneme-Guided Zero-Shot Keyword Spotting for User-Defined Keywords},
+  author    = {Lee, Yong-Hyeok and Cho, Namhyun},
+  booktitle = {Proc. INTERSPEECH 2023},
+  pages     = {3964--3968},
+  year      = {2023}
+}
+```
