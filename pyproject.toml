@@ -1,29 +1,46 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "naptrap"
 version = "0.1.0"
-description = "Local inference for independently trained text-defined keyword models"
+description = "Local, text-defined wake word and keyword detection in PyTorch"
 readme = "README.md"
-requires-python = ">=3.8"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "licenses/*.txt"]
+authors = [{ name = "Drew Bednar", email = "drew@runcible.io" }]
+requires-python = ">=3.9"
 dependencies = [
   "torch>=1.13",
+  "safetensors>=0.4",
+]
+keywords = ["wake word", "keyword spotting", "speech", "phonmatchnet", "pytorch", "kws"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 [project.optional-dependencies]
-examples = ["numpy>=1.24"]
-test = ["pytest>=7", "numpy>=1.24"]
+hub = ["huggingface_hub>=0.20"]
+test = ["pytest>=7", "numpy"]  # safetensors needs NumPy to write the test fixtures
+
+[project.urls]
+Homepage = "https://github.com/androiddrew/naptrap"
+Issues = "https://github.com/androiddrew/naptrap/issues"
+Models = "https://huggingface.co/androiddrew/naptrap-phonmatchnet-en"
 
 [project.scripts]
 naptrap = "naptrap.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools]
-license-files = ["licenses/*.txt", "THIRD_PARTY_NOTICES.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
