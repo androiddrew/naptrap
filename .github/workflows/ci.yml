@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.9"
+            torch: "torch==1.13.1"
+            numpy: "numpy<2"
+          - python: "3.11"
+            torch: "torch"
+            numpy: "numpy"
+          - python: "3.13"
+            torch: "torch"
+            numpy: "numpy"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install "${{ matrix.torch }}" --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[test,hub]" "${{ matrix.numpy }}"
+      - name: Download released models
+        run: |
+          for repo in naptrap-phonmatchnet-en google-speech-embedding-pytorch g2p-en-decoder-pytorch; do
+            hf download "androiddrew/$repo" --revision v1 --local-dir "models/$repo"
+          done
+      - run: pytest -q
+        env:
+          NAPTRAP_TEST_MODELS: models
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*

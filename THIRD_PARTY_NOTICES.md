@@ -1,25 +1,17 @@
-# Dependency and attribution scope
+# Third-party notices
 
-- **PhonMatchNet:** the independently trained model uses the licensed NCSOFT
-  PhonMatchNet foundation (BSD-3-Clause). The original notice is reproduced in
-  `licenses/PhonMatchNet-BSD-3-Clause.txt`. The training checkout is not imported
-  by this library. Exact model/asset provenance and notices accompany the
-  separately distributed model bundle.
-- **Google speech_embedding/1:** publisher-declared Apache-2.0 model-instance
-  license. It is a required feature source for the trained keyword models, but
-  its weights and TensorFlow runtime are not bundled in this source package.
-  `naptrap.google` independently implements its inference graph using PyTorch;
-  the converted weight distribution preserves the upstream Apache-2.0 license
-  and conversion notice. See `docs/google-embedding.md`.
-- **G2P:** the trained models expect the licensed neural decoder's 256D hidden
-  states. The current source project's modified G2P adapter and weights are
-  Apache-2.0, with additional resource-specific notices. Naptrap currently
-  accepts the resulting features; it does not vendor that implementation.
-- **PyTorch / NumPy:** separately installed runtime dependencies; their native
-  libraries are not vendored here.
+naptrap's own code is licensed under Apache-2.0 (see `LICENSE` and `NOTICE`).
+The package bundles **no model weights**. Weights are downloaded separately
+from Hugging Face, and each repository carries its own license and notices.
 
-The trained model bundle contains exact mel/window buffers. Reusing those
-artifacts or adding a new wrapper does not remove applicable upstream notices.
-The final license for the new Naptrap code and our original learned weights is
-still an explicit project choice; dependency licenses do not automatically
-assign that choice.
+| Component | Used for | License | Where |
+|---|---|---|---|
+| PhonMatchNet architecture and training code, © NCSOFT Corporation | `naptrap/models/network.py` follows its network design | BSD-3-Clause | `licenses/PhonMatchNet-BSD-3-Clause.txt`, <https://github.com/ncsoft/PhonMatchNet> |
+| PhonMatchNet weights, trained independently by Drew Bednar | default keyword model | Apache-2.0 | <https://huggingface.co/androiddrew/naptrap-phonmatchnet-en> |
+| Google speech_embedding/1 | frozen audio features (`naptrap/google.py`) | Apache-2.0 | <https://huggingface.co/androiddrew/google-speech-embedding-pytorch> |
+| g2p_en 2.1.0, Kyubyong Park & Jongseok Kim | frozen keyword text features (`naptrap/text.py`) | Apache-2.0 | <https://huggingface.co/androiddrew/g2p-en-decoder-pytorch> |
+| LibriSpeech (Panayotov et al.) | training data for the PhonMatchNet weights | CC BY 4.0 | <https://www.openslr.org/12> |
+| PyTorch, safetensors, huggingface_hub (optional) | runtime dependencies, installed separately | BSD-3-Clause / Apache-2.0 / Apache-2.0 | PyPI |
+
+naptrap and these weights are not affiliated with or endorsed by NCSOFT, the
+PhonMatchNet authors, Google or the g2p_en authors.

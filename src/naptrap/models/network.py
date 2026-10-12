@@ -1,7 +1,8 @@
-"""Independent eager PyTorch implementation of the qualified PhonMatchNet graph.
+"""PhonMatchNet network for single-clip inference.
 
-One unpadded clip; tensor time axes are its valid lengths. This avoids depending
-on TorchScript serialization compatibility for the public Python API.
+Architecture after PhonMatchNet (Lee et al., Interspeech 2023) and NCSOFT's
+BSD-3-Clause PyTorch implementation; see licenses/PhonMatchNet-BSD-3-Clause.txt.
+Tensors hold one unpadded clip, so time axes are the valid lengths.
 """
 
 import math
@@ -16,14 +17,14 @@ from ..features import KeywordMel
 class _Norm(nn.Module):
     def __init__(self):
         super().__init__()
-        # Preserve checkpoint key names from the valid-position training BN.
+        # Nested name kept so weight keys match the trained checkpoint.
         self.bn = nn.BatchNorm1d(128)
 
 
 class _Audio(nn.Module):
-    def __init__(self, frontend):
+    def __init__(self):
         super().__init__()
-        self.frontend = KeywordMel(frontend)
+        self.frontend = KeywordMel()
         self.conv1 = nn.Conv1d(40, 128, 3, stride=2, padding=1)
         self.bn1 = _Norm()
         self.conv2 = nn.Conv1d(128, 128, 3, padding=1)
@@ -31,16 +32,14 @@ class _Audio(nn.Module):
 
 
 class PhonMatchNetwork(nn.Module):
-    def __init__(self, frontend):
+    def __init__(self):
         super().__init__()
-        self.audio = _Audio(frontend)
+        self.audio = _Audio()
         self.google_upsample = nn.ConvTranspose1d(96, 128, 5, stride=4)
         self.text_projection = nn.Linear(256, 128)
         self.attention = nn.MultiheadAttention(128, 1, batch_first=True)
         self.utterance_gru = nn.GRU(128, 128, batch_first=True)
         self.utterance_head = nn.Linear(128, 1)
-        # Retained for strict selected-state loading, unused for utterance inference.
-        self.phoneme_head = nn.Linear(128, 1)
         self.requires_grad_(False)
         self.eval()
 
