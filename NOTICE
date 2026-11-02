@@ -16,4 +16,14 @@ https://github.com/Kyubyong/g2p.
 src/naptrap/google.py reimplements Google's speech_embedding/1 model
 (Apache-2.0) in PyTorch. naptrap is not affiliated with or endorsed by Google.
 
+src/naptrap/models/zp_kws_network.py (experimental, unreleased) implements the
+method of "Personalized Keyword Spotting for User-Defined Keywords Leveraging
+Text-Independent Speaker Verification" (Hu, Huang, Wang, Lee and Chen,
+arXiv:2606.20106) independently; it contains no code from the authors'
+reference repository. Its keyword matcher extends the PhonMatchNet design
+above. Its speaker encoder is the EfficientTDNN Small network from the Sugar
+toolkit by WangRui (MIT), https://github.com/mechanicalsea/sugar; Sugar's
+copyright notice and license: licenses/Sugar-MIT.txt. naptrap is not
+affiliated with or endorsed by the ZP-KWS or Sugar authors.
+
 Model weights are not included in this package; see THIRD_PARTY_NOTICES.md.

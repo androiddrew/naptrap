@@ -11,6 +11,8 @@ from naptrap import G2PTextEncoder, GoogleSpeechEmbedding
 from naptrap.google import FORMAT as GOOGLE_FORMAT, PARENT_SHA256
 from naptrap.models.network import PhonMatchNetwork
 from naptrap.models.phonmatchnet import FORMAT as PHONMATCHNET_FORMAT
+from naptrap.models.zp_kws import FORMAT as ZP_KWS_FORMAT
+from naptrap.models.zp_kws_network import ZpKwsNetwork
 from naptrap.text import FORMAT as G2P_FORMAT
 
 REPOS = ("naptrap-phonmatchnet-en", "google-speech-embedding-pytorch", "g2p-en-decoder-pytorch")
@@ -47,7 +49,19 @@ def tiny_models(tmp_path_factory):
         "requires": {"google": {"repo_id": "x/google", "revision": "v1", "sha256": google},
                      "g2p": {"repo_id": "x/g2p", "revision": "v1", "sha256": g2p}},
     })
+    write_artifact(root / "zp-kws", ZpKwsNetwork(), {
+        "format": ZP_KWS_FORMAT,
+        "thresholds": {"TO-KWS": {"0.01": 0.2, "0.1": 0.02}, "C-KWS": {"0.01": 0.9, "0.1": 0.5}},
+        "requires": {"google": {"repo_id": "x/google", "revision": "v1", "sha256": google},
+                     "g2p": {"repo_id": "x/g2p", "revision": "v1", "sha256": g2p}},
+    })
     return {"model_dir": root / "phonmatchnet", "google_dir": root / "google", "g2p_dir": root / "g2p"}
+
+
+@pytest.fixture(scope="session")
+def tiny_zp_kws(tiny_models):
+    """The random-weight ZP-KWS artifact, with the same companion encoders."""
+    return {**tiny_models, "model_dir": tiny_models["model_dir"].parent / "zp-kws"}
 
 
 @pytest.fixture(scope="session")
@@ -58,3 +72,11 @@ def real_models():
     root = Path(value).expanduser()
     model_dir, google_dir, g2p_dir = (root / name for name in REPOS)
     return {"model_dir": model_dir, "google_dir": google_dir, "g2p_dir": g2p_dir}
+
+
+@pytest.fixture(scope="session")
+def real_zp_kws(real_models):
+    value = os.environ.get("NAPTRAP_TEST_ZP_KWS")
+    if not value:
+        pytest.skip("Set NAPTRAP_TEST_ZP_KWS to a naptrap-zp-kws-en model directory")
+    return {**real_models, "model_dir": Path(value).expanduser()}
