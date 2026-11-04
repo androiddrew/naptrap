@@ -10,8 +10,11 @@ from Hugging Face, and each repository carries its own license and notices.
 | PhonMatchNet weights, trained independently by Drew Bednar | default keyword model | Apache-2.0 | <https://huggingface.co/androiddrew/naptrap-phonmatchnet-en> |
 | Google speech_embedding/1 | frozen audio features (`naptrap/google.py`) | Apache-2.0 | <https://huggingface.co/androiddrew/google-speech-embedding-pytorch> |
 | g2p_en 2.1.0, Kyubyong Park & Jongseok Kim | frozen keyword text features (`naptrap/text.py`) | Apache-2.0 | <https://huggingface.co/androiddrew/g2p-en-decoder-pytorch> |
-| LibriSpeech (Panayotov et al.) | training data for the PhonMatchNet weights | CC BY 4.0 | <https://www.openslr.org/12> |
+| ZP-KWS method, Hu et al. (arXiv:2606.20106) | experimental `zp-kws` model (`naptrap/models/zp_kws_network.py`), implemented independently | n/a (no code used) | <https://arxiv.org/abs/2606.20106> |
+| Sugar toolkit, EfficientTDNN, © 2021 WangRui | `zp-kws` speaker encoder network design | MIT | `licenses/Sugar-MIT.txt`, <https://github.com/mechanicalsea/sugar> |
+| LibriSpeech (Panayotov et al.) | training data for the PhonMatchNet and ZP-KWS weights | CC BY 4.0 | <https://www.openslr.org/12> |
 | PyTorch, safetensors, huggingface_hub (optional) | runtime dependencies, installed separately | BSD-3-Clause / Apache-2.0 / Apache-2.0 | PyPI |
 
 naptrap and these weights are not affiliated with or endorsed by NCSOFT, the
-PhonMatchNet authors, Google or the g2p_en authors.
+PhonMatchNet authors, the ZP-KWS authors, the Sugar authors, Google or the
+g2p_en authors.

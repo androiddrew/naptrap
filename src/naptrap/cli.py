@@ -24,10 +24,18 @@ def main(argv=None):
     detect.add_argument("--model-dir", type=Path, help="local model directory (default: download)")
     detect.add_argument("--google-dir", type=Path, help="local Google speech embedding directory")
     detect.add_argument("--g2p-dir", type=Path, help="local G2P decoder directory")
+    if "zp-kws" in available_models():
+        detect.add_argument("--enroll", type=Path, metavar="SPEAKER.wav",
+                            help="0.5-2 s clip of the enrolled speaker (experimental zp-kws model only)")
     args = parser.parse_args(argv)
     try:
         model = load_model(args.model, model_dir=args.model_dir, google_dir=args.google_dir, g2p_dir=args.g2p_dir)
-        result = model.detect(load_wav(args.audio), args.keyword, far=args.far)
+        options = {}
+        if getattr(args, "enroll", None) is not None:
+            if not hasattr(model, "enroll"):
+                raise ValueError(f"--enroll is not supported by the {args.model} model")
+            options["enrollment"] = model.enroll(load_wav(args.enroll))
+        result = model.detect(load_wav(args.audio), args.keyword, far=args.far, **options)
     except (ImportError, OSError, ValueError, RuntimeError) as error:
         parser.exit(2, f"naptrap: {error}\n")
     json.dump(result.to_dict(), sys.stdout, indent=2)
