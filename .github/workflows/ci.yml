@@ -7,18 +7,22 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Python 3.9 is end-of-life and has no build for newer Ubuntu images.
           - python: "3.9"
+            os: ubuntu-24.04
             torch: "torch==1.13.1"
             numpy: "numpy<2"
           - python: "3.11"
+            os: ubuntu-latest
             torch: "torch"
             numpy: "numpy"
           - python: "3.13"
+            os: ubuntu-latest
             torch: "torch"
             numpy: "numpy"
     steps:
