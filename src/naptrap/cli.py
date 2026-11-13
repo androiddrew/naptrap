@@ -89,21 +89,30 @@ def _listen(parser, args):
         for chunk in chunks:
             for detection in feed(chunk):
                 heard = True
-                print(json.dumps(detection.to_dict()), flush=True)
+                if not _report(detection):
+                    return 0
     except KeyboardInterrupt:
         pass
-    except OSError as error:
-        if not isinstance(error, BrokenPipeError) and error.errno != errno.EINVAL:
-            parser.exit(2, f"naptrap: {error}\n")
-        # The reader of our output has gone (EINVAL is how Windows reports it): stop quietly, and give
-        # Python somewhere to flush what is left when it exits.
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-    except (ImportError, ValueError, RuntimeError) as error:
+    except (ImportError, OSError, ValueError, RuntimeError) as error:
         parser.exit(2, f"naptrap: {error}\n")
     if not listener.scores:
         print(f"naptrap: the audio ended before one {listener.window:g} s window had been heard; nothing was scored",
               file=sys.stderr)
     return 0 if heard else 1
+
+
+def _report(detection):
+    """Print one detection as a JSON line. Returns False when the reader of our output has gone."""
+    try:
+        print(json.dumps(detection.to_dict()), flush=True)
+    except OSError as error:
+        if not isinstance(error, BrokenPipeError) and error.errno != errno.EINVAL:
+            raise
+        # EINVAL is how Windows reports a closed pipe. Stop quietly, and give Python somewhere to flush
+        # what is left when it exits.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return False
+    return True
 
 
 def _pcm_chunks(stream, samples=SAMPLE_RATE // 10):

@@ -1,3 +1,5 @@
+import array
+import errno
 import io
 import json
 import wave
@@ -188,7 +190,8 @@ def test_pcm16_bytes_match_float_samples(tiny):
         assert Listener(tiny, "hey computer", threshold=0.0).feed_pcm16(form)[0].score == expected
     listener = Listener(tiny, "hey computer", threshold=0.0)
     assert listener.feed_pcm16(b"") == []
-    for bad in (b"\x00", "0000", None, [0, 0]):
+    floats = array.array("f", [0.0, 0.0])  # the right number of bytes, but not bytes: must not be read as PCM
+    for bad in (b"\x00", "0000", None, [0, 0], floats):
         with pytest.raises(ValueError):
             listener.feed_pcm16(bad)
     assert listener.time == 0.0
@@ -318,6 +321,23 @@ def test_listen_command_needs_audio_from_somewhere(tiny_models, capsys, monkeypa
     with pytest.raises(SystemExit) as stopped:
         main(["listen", "hey computer"] + folders(tiny_models))
     assert stopped.value.code == 2 and "--input" in capsys.readouterr().err
+
+
+def test_listen_command_reports_an_input_error(tiny_models, capsys, monkeypatch):
+    class Broken:
+        def read(self, size):
+            raise OSError(errno.EINVAL, "the input went wrong")  # the code a closed output pipe has on Windows
+
+    class Stdin:
+        buffer = Broken()
+
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr("sys.stdin", Stdin())
+    with pytest.raises(SystemExit) as stopped:
+        main(["listen", "hey computer"] + folders(tiny_models))
+    assert stopped.value.code == 2 and "the input went wrong" in capsys.readouterr().err
 
 
 def test_listen_command_stops_quietly_when_its_reader_leaves(tiny_models, tmp_path, capfd, monkeypatch):

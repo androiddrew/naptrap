@@ -164,12 +164,17 @@ class Listener:
     def feed_pcm16(self, data: Any) -> List[Detection]:
         """Add raw 16-bit little-endian mono 16 kHz PCM, as most microphone libraries deliver it.
 
-        ``data`` is ``bytes`` or any other bytes-like object holding a whole number of samples.
+        ``data`` is ``bytes`` or any other object holding plain bytes (``bytearray``, ``memoryview``), a
+        whole number of samples. Arrays of other types are refused, not reinterpreted: give floats to
+        :meth:`feed`.
         """
         values = array.array("h")
         try:
-            values.frombytes(data)
-        except (TypeError, ValueError) as error:
+            view = memoryview(data)
+            if view.itemsize != 1:
+                raise TypeError("not plain bytes")
+            values.frombytes(view)
+        except (TypeError, ValueError, BufferError) as error:
             raise ValueError("16-bit PCM must be a bytes-like object holding a whole number of samples") from error
         if sys.byteorder == "big":
             values.byteswap()
