@@ -96,13 +96,18 @@ class PhonMatchNet:
         """
         if not isinstance(keyword, Keyword):
             keyword = self.keyword(keyword)
+        features = self.audio_features(waveform, sample_rate=sample_rate)
+        return self.predict({**features, "text": keyword.features}, far=far)
+
+    @torch.inference_mode()
+    def audio_features(self, waveform: Any, *, sample_rate: int = SAMPLE_RATE) -> Dict[str, torch.Tensor]:
+        """A clip's ``keyword_mel`` and ``google`` features, without a keyword.
+
+        Add a keyword's ``text`` features and pass the result to
+        :meth:`predict` to score one clip against several keywords.
+        """
         wave = waveform_tensor(waveform, sample_rate)
-        features = {
-            "keyword_mel": self._frontend(wave),
-            "google": self.google_encoder(wave, sample_rate=sample_rate),
-            "text": keyword.features,
-        }
-        return self.predict(features, far=far)
+        return {"keyword_mel": self._frontend(wave), "google": self.google_encoder(wave, sample_rate=sample_rate)}
 
     @torch.inference_mode()
     def predict(self, features: Mapping[str, Any], *, far: float = 0.01) -> Prediction:

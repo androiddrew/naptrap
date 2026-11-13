@@ -28,6 +28,8 @@ def write_artifact(directory: Path, module: torch.nn.Module, config: dict) -> st
             value = torch.randn(value.shape, generator=generator) * 0.1
             if "running_var" in key:
                 value = value.abs() + 1
+            if "mel_matrix" in key:
+                value = value.abs()  # real mel filters are never negative; the log of a negative sum is not a number
         state[key] = value.contiguous()
     weights = directory / "model.safetensors"
     save_file(state, str(weights))
