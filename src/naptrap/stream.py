@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import array
+import math
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 import torch
 
-from .features import SAMPLE_RATE
+from .features import MAX_SAMPLES, MIN_SAMPLES, SAMPLE_RATE
 from .types import Keyword, KeywordModel
 
 
@@ -37,19 +38,24 @@ class Listener:
     """Watch a continuous mono 16 kHz stream for one or more keywords.
 
     The models score single clips, so the listener keeps the last ``window``
-    seconds of audio and scores them every ``hop`` seconds. Each score is the
-    same number ``model.detect()`` returns for that window. A keyword is
-    reported when ``patience`` windows in a row reach the threshold, and then
-    not again for ``refractory`` seconds, so one utterance gives one detection.
+    seconds of audio (0.5 to 2, the clip lengths the models accept) and scores
+    them every ``hop`` seconds. Each score is the same number
+    ``model.detect()`` returns for that window. A keyword is reported when
+    ``patience`` windows in a row reach the threshold, and then not again for
+    ``refractory`` seconds, so one utterance gives one detection. A score that
+    stays above the threshold for longer than ``refractory`` is reported
+    again, with the highest score since the last report.
 
     ``threshold`` defaults to the model's calibrated threshold for ``far``.
     That calibration is per clip: a listener scores several windows a second,
     so choose a threshold from recordings made in your own setting.
 
-    >>> listener = Listener(model, "hey computer")
-    >>> for chunk in microphone:                # float32 chunks of any length
-    ...     for detection in listener.feed(chunk):
-    ...         print(detection.keyword, detection.end)
+    Models with an ``audio_features()`` method have each window's audio
+    features computed once for all keywords; other models are scored through
+    ``detect()`` for each keyword, which needs ``threshold=`` when the model
+    has no single calibrated threshold. Speaker enrollment is not supported.
+
+    A listener is not thread-safe: call :meth:`feed` from one thread.
     """
 
     def __init__(self, model: KeywordModel, keywords: Union[str, Keyword, Sequence[Union[str, Keyword]]], *,
@@ -57,23 +63,35 @@ class Listener:
                  patience: int = 1, refractory: float = 2.0):
         if isinstance(keywords, (str, Keyword)):
             keywords = [keywords]
-        self._keywords = [k if isinstance(k, Keyword) else model.keyword(k) for k in keywords]
+        self._keywords: List[Keyword] = []
+        for keyword in keywords:
+            if not isinstance(keyword, Keyword):
+                keyword = model.keyword(keyword)
+            if keyword.text not in [k.text for k in self._keywords]:  # the same phrase twice is listened for once
+                self._keywords.append(keyword)
         if not self._keywords:
             raise ValueError("Give at least one keyword")
+        calibrated = getattr(model, "thresholds", None)
+        if isinstance(calibrated, Mapping) and not _calibrated(calibrated, far):
+            raise ValueError("far must be one of the model's calibrated operating points")
         if threshold is None:
-            calibrated = getattr(model, "thresholds", {})
-            if not isinstance(calibrated.get(far), float):
+            if not isinstance(calibrated, Mapping) or not isinstance(calibrated.get(far), float):
                 raise ValueError("This model has no single threshold for that operating point; pass threshold=")
             threshold = calibrated[far]
         if not 0 <= threshold <= 1:
             raise ValueError("threshold must be between 0 and 1")
+        if not (math.isfinite(window) and math.isfinite(hop)):
+            raise ValueError("window and hop must be finite numbers of seconds")
         self._window, self._hop = round(window * SAMPLE_RATE), round(hop * SAMPLE_RATE)
-        if self._window < 1 or self._hop < 1:
-            raise ValueError("window and hop must be positive")
+        if not MIN_SAMPLES <= self._window <= MAX_SAMPLES:
+            raise ValueError(f"window must be {MIN_SAMPLES / SAMPLE_RATE:g}-{MAX_SAMPLES / SAMPLE_RATE:g} seconds, "
+                             "the clip lengths the models accept")
+        if self._hop < 1:
+            raise ValueError("hop must be positive")
         if int(patience) != patience or patience < 1:
             raise ValueError("patience must be a whole number of windows, at least 1")
-        if refractory < 0:
-            raise ValueError("refractory must not be negative")
+        if not (math.isfinite(refractory) and refractory >= 0):
+            raise ValueError("refractory must be a finite number of seconds, not negative")
         self.model = model
         self.threshold = float(threshold)
         self.far, self.patience, self.refractory = far, int(patience), float(refractory)
@@ -88,12 +106,23 @@ class Listener:
         self._until_next = self._window  # the first score needs one full window
         self._runs = [0] * len(self._keywords)
         self._peaks = [0.0] * len(self._keywords)
-        self._quiet_until = [0.0] * len(self._keywords)
+        self._quiet_until = [0] * len(self._keywords)  # in samples, so hops that are not binary fractions stay exact
         self._scores: Dict[str, float] = {}
 
     @property
     def keywords(self) -> List[str]:
+        """The normalized keywords being listened for, each once."""
         return [k.text for k in self._keywords]
+
+    @property
+    def window(self) -> float:
+        """Seconds of audio scored at a time."""
+        return self._window / SAMPLE_RATE
+
+    @property
+    def hop(self) -> float:
+        """Seconds between one score and the next."""
+        return self._hop / SAMPLE_RATE
 
     @property
     def time(self) -> float:
@@ -132,11 +161,16 @@ class Listener:
                 detections.extend(self._evaluate())
         return detections
 
-    def feed_pcm16(self, data: bytes) -> List[Detection]:
-        """Add raw 16-bit little-endian mono 16 kHz PCM, as most microphone libraries deliver it."""
-        if len(data) % 2:
-            raise ValueError("16-bit PCM must be a whole number of samples")
-        values = array.array("h", data)
+    def feed_pcm16(self, data: Any) -> List[Detection]:
+        """Add raw 16-bit little-endian mono 16 kHz PCM, as most microphone libraries deliver it.
+
+        ``data`` is ``bytes`` or any other bytes-like object holding a whole number of samples.
+        """
+        values = array.array("h")
+        try:
+            values.frombytes(data)
+        except (TypeError, ValueError) as error:
+            raise ValueError("16-bit PCM must be a bytes-like object holding a whole number of samples") from error
         if sys.byteorder == "big":
             values.byteswap()
         return self.feed(torch.tensor(values, dtype=torch.float32) / 32768)
@@ -149,7 +183,7 @@ class Listener:
 
     def _evaluate(self) -> List[Detection]:
         end = self.time
-        scores = self._window_scores(self._buffer.contiguous())
+        scores = self._window_scores(self._buffer)
         self._scores = {k.text: s for k, s in zip(self._keywords, scores)}
         detections = []
         for index, (keyword, score) in enumerate(zip(self._keywords, scores)):
@@ -158,8 +192,14 @@ class Listener:
                 continue
             self._runs[index] += 1
             self._peaks[index] = max(self._peaks[index], score)
-            if self._runs[index] >= self.patience and end >= self._quiet_until[index]:
+            if self._runs[index] >= self.patience and self._samples >= self._quiet_until[index]:
                 detections.append(Detection(keyword.text, self._peaks[index], self.threshold,
-                                            max(0.0, end - self._window / SAMPLE_RATE), end))
-                self._quiet_until[index] = end + self.refractory
+                                            max(0.0, end - self.window), end))
+                self._quiet_until[index] = self._samples + round(self.refractory * SAMPLE_RATE)
+                self._runs[index], self._peaks[index] = 0, 0.0  # a later report starts a new run
         return detections
+
+
+def _calibrated(thresholds: Mapping[Any, Any], far: float) -> bool:
+    """Whether ``far`` is an operating point of a model's thresholds, given per point or per task."""
+    return far in thresholds or any(isinstance(v, Mapping) and far in v for v in thresholds.values())

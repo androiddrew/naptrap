@@ -14,7 +14,11 @@ from .features import SAMPLE_RATE
 
 def load_wav(path: str | Path) -> torch.Tensor:
     """Read a mono 16 kHz 16-bit PCM WAV file as float32 samples in [-1, 1)."""
-    with wave.open(str(Path(path).expanduser()), "rb") as stream:
+    try:
+        stream = wave.open(str(Path(path).expanduser()), "rb")
+    except (wave.Error, EOFError) as error:
+        raise ValueError(f"{path} is not a readable WAV file") from error
+    with stream:
         if stream.getnchannels() != 1 or stream.getsampwidth() != 2 or stream.getframerate() != SAMPLE_RATE:
             raise ValueError("Expected a mono, 16-bit PCM, 16 kHz WAV file; convert it first, "
                              "e.g. ffmpeg -i in.wav -ac 1 -ar 16000 -sample_fmt s16 out.wav")

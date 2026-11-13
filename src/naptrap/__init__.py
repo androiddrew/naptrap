@@ -12,5 +12,6 @@ from .types import Keyword, KeywordModel, Prediction
 __version__ = "0.1.0"
 __all__ = [
     "ArtifactError", "Detection", "G2PTextEncoder", "GoogleSpeechEmbedding", "Keyword", "KeywordModel",
-    "Listener", "PhonMatchNet", "Prediction", "available_models", "load_model", "load_wav", "normalize_keyword", "register_model",
+    "Listener", "PhonMatchNet", "Prediction", "available_models", "load_model", "load_wav", "normalize_keyword",
+    "register_model",
 ]

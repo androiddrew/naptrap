@@ -137,9 +137,9 @@ for chunk in microphone:                    # float32 in [-1, 1]
 ```
 
 It keeps the last 1.5 s of audio and scores it every 0.25 s; each score is
-what `detect()` returns for that window. A keyword is reported once per
-utterance: after a detection it stays quiet for `refractory` seconds (2 by
-default). `patience=2` asks for two windows in a row, which removes many
+what `detect()` returns for that window, so `window` must be a clip length
+the model accepts, 0.5 to 2 s. A keyword is reported once per utterance:
+after a detection it stays quiet for `refractory` seconds (2 by default). `patience=2` asks for two windows in a row, which removes many
 one-window false alarms at the cost of some misses. `listener.scores` holds
 the latest score per keyword, for a level meter or for choosing a threshold,
 and `feed_pcm16()` takes raw 16-bit PCM bytes. naptrap does not open the
@@ -153,6 +153,10 @@ arecord -q -f S16_LE -r 16000 -c 1 -t raw | naptrap listen "hey computer"
 ffmpeg -loglevel quiet -i recording.m4a -ac 1 -ar 16000 -f s16le - | naptrap listen "hey computer"
 naptrap listen "hey computer" --input recording.wav --threshold 0.95 --patience 2
 ```
+
+It exits with 0 if a keyword was heard, 1 if none was and 2 on error. Windows
+PowerShell pipes change binary data on the way through, so there use `--input`,
+or run the pipe from `cmd` or Git Bash.
 
 The calibrated thresholds are per clip. A listener scores four windows a
 second, so false alarms add up over hours: measure on your own audio and set
